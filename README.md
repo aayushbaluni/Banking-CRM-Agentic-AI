@@ -1,3 +1,14 @@
+---
+title: Banking CRM AI
+emoji: 🏦
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+pinned: false
+license: mit
+app_port: 7860
+---
+
 # Banking CRM Agentic AI
 
 A **production-hardened, Supervisor–Subagent multi-agent system** built with LangGraph that lets Relationship Managers (RMs) use natural language to identify high-potential customers across **seven loan categories**, score conversion propensity, match compliant products, and generate personalized WhatsApp outreach — with **LLM-driven routing**, **durable conversation state**, and **180 automated tests** validating security and edge cases.
