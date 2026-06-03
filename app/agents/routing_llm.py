@@ -170,22 +170,15 @@ def decide_router(state: AgentState) -> tuple[str, dict]:
 
     next_node: general_chat | data_agent | scoring_agent | product_agent |
                outreach_agent | supervisor
+
+    Follow-up actions (OUTREACH/CONTINUE/RESTART/UNSUPPORTED) are checked
+    BEFORE product scope so that "generate messages" isn't misclassified
+    as unsupported when no loan category is mentioned.
     """
     message = _last_human_message(state)
-
-    scope = llm_product_scope(message)
-    if scope == "unsupported":
-        return "supervisor", {
-            "retrieved_customers": [],
-            "scored_customers": [],
-            "final_recommendations": [],
-            "final_response": "",
-            "unsupported_product": True,
-        }
-
     recs = state.get("final_recommendations", [])
-    has_messages = any(r.get("whatsapp_message") for r in recs)
 
+    # ── Follow-up turn: existing recommendations on screen ──────────────
     if recs:
         action = llm_follow_up_action(state)
         if action == "unsupported":
@@ -200,7 +193,16 @@ def decide_router(state: AgentState) -> tuple[str, dict]:
             return "outreach_agent", {"unsupported_product": False}
         if action == "continue":
             return "supervisor", {"unsupported_product": False}
-        # restart — update loan_category in case the RM switched categories
+        # restart — classify category for the new search
+        scope = llm_product_scope(message)
+        if scope == "unsupported":
+            return "supervisor", {
+                "retrieved_customers": [],
+                "scored_customers": [],
+                "final_recommendations": [],
+                "final_response": "",
+                "unsupported_product": True,
+            }
         return "data_agent", {
             "retrieved_customers": [],
             "scored_customers": [],
@@ -208,6 +210,17 @@ def decide_router(state: AgentState) -> tuple[str, dict]:
             "final_response": "",
             "unsupported_product": False,
             "loan_category": scope,
+        }
+
+    # ── Fresh turn: no recommendations yet ──────────────────────────────
+    scope = llm_product_scope(message)
+    if scope == "unsupported":
+        return "supervisor", {
+            "retrieved_customers": [],
+            "scored_customers": [],
+            "final_recommendations": [],
+            "final_response": "",
+            "unsupported_product": True,
         }
 
     if state.get("scored_customers"):
