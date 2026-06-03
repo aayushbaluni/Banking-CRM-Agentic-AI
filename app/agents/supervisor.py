@@ -50,15 +50,27 @@ that have ZERO connection to loans, customers, banking, or CRM operations.
 Reply with ONLY one of these two words. No explanation."""
 
 
+_LOAN_KEYWORDS = frozenset([
+    "loan", "personal loan", "home loan", "car loan", "auto loan", "business loan",
+    "education loan", "gold loan", "lap", "loan against property",
+    "customer", "customers", "crm", "score", "scoring", "propensity",
+    "whatsapp", "outreach", "message", "messages", "recommend", "eligible",
+    "qualify", "qualifies", "find", "show", "search", "retrieve", "high-value",
+    "mvp", "convert", "conversion", "prospect", "prospects", "candidate",
+])
+
+
 def _classify_intent(message: str) -> str:
     """
-    Classify intent with a two-tier strategy:
+    Classify intent with a three-tier strategy:
 
     Tier 1 — O(1) fast-path: if the entire message (lowercased, stripped) is in
-    _OBVIOUS_CHAT, return 'general_chat' instantly. No network call.
+    _OBVIOUS_CHAT, return 'general_chat' instantly.
 
-    Tier 2 — LLM: for everything else (ambiguous phrasing, mixed content,
-    questions about capabilities). Falls back to 'crm_task' on error.
+    Tier 2 — Keyword fast-path: if any loan/CRM keyword appears in the message,
+    return 'crm_task' instantly. Prevents LLM from misclassifying loan queries.
+
+    Tier 3 — LLM: for everything else. Falls back to 'crm_task' on error.
     """
     normalised = message.lower().strip().rstrip("!?.,:;")
 
@@ -66,7 +78,12 @@ def _classify_intent(message: str) -> str:
     if normalised in _OBVIOUS_CHAT:
         return "general_chat"
 
-    # Tier 2: LLM for anything ambiguous
+    # Tier 2: any loan/CRM keyword → always a CRM task
+    words = set(normalised.split())
+    if words & _LOAN_KEYWORDS:
+        return "crm_task"
+
+    # Tier 3: LLM for anything ambiguous
     try:
         llm = get_llm(temperature=0)
         resp = llm.invoke([
@@ -76,7 +93,7 @@ def _classify_intent(message: str) -> str:
         label = (resp.content or "").strip().lower()
         return "crm_task" if "crm" in label else "general_chat"
     except Exception:
-        return "crm_task"  # safe default — never silently breaks the pipeline
+        return "crm_task"
 
 
 def _is_crm_task(state: AgentState) -> bool:
