@@ -136,14 +136,12 @@ async def handle_chat(message: str, thread_id: str) -> ChatResponse:
         for t in result.get("trace", [])
     ]
 
-    # A turn is only a "follow-up" if it reused prior state without re-querying.
-    # If data_agent ran (visible in trace), it's a new/restarted search regardless
-    # of whether a checkpoint existed.
-    ran_data_agent = any(
-        t.get("step") == "data_agent" and not t.get("skipped")
-        for t in result.get("trace", [])
-    )
-    actual_followup = is_followup and not ran_data_agent
+    # Determine if this turn was a follow-up or a new/restarted search.
+    # The router sets next_agent: outreach_agent or supervisor for follow-ups,
+    # data_agent for new searches. This is more reliable than checking the
+    # accumulated trace (which spans all turns).
+    routed_to = result.get("next_agent", "")
+    actual_followup = is_followup and routed_to not in ("data_agent", "general_chat")
 
     stats = {
         "customers_retrieved": len(result.get("retrieved_customers", [])),
