@@ -596,7 +596,7 @@ banking-crm-agent/
 │   │   └── guardrails.py           # WhatsApp compliance validation
 │   ├── prompts/
 │   │   ├── registry.py             # Centralized prompt management (single source of truth)
-│   │   └── PROMPTFORGE.md          # Prompt engineering notes
+│   │   └── __init__.py
 │   ├── db/
 │   │   ├── database.py             # SQLAlchemy + WAL mode + busy_timeout
 │   │   ├── schema.py               # ORM models (Customer, Product, Transaction)
@@ -662,7 +662,6 @@ banking-crm-agent/
 ## Documentation
 
 - **PRD.md** — Product requirements and acceptance criteria
-- **app/prompts/PROMPTFORGE.md** — Prompt engineering notes and design rationale
 - **notebooks/propensity_analysis.ipynb** — ML model analysis and feature importance
 
 ---

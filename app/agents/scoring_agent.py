@@ -46,7 +46,9 @@ def scoring_agent_node(state: AgentState) -> dict:
 
     # Inject loan_category so scoring heuristics can apply category-specific logic
     customers_with_category = [{**c, "loan_category": loan_category} for c in customers]
-    top_n = _extract_requested_count(state)
+    requested_n = _extract_requested_count(state)
+    # Over-fetch 2x so product eligibility filtering still yields enough results
+    top_n = min(requested_n * 2, len(customers_with_category))
 
     raw = batch_score_customers.invoke({
         "customers_json": json.dumps(customers_with_category),
@@ -75,7 +77,7 @@ def scoring_agent_node(state: AgentState) -> dict:
             "step": "scoring_agent",
             "decision": (
                 f"Scored {len(customers)} customers, returning top {top_n} "
-                f"(RM requested {top_n})"
+                f"(RM requested {requested_n}, over-fetched {top_n} for eligibility buffer)"
             ),
             "tools_called": ["batch_score_customers"],
             "result_summary": (
