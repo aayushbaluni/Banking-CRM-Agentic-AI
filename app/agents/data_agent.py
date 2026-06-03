@@ -126,7 +126,19 @@ def data_agent_node(state: AgentState) -> dict:
         }
 
     llm = get_llm().bind_tools(TOOLS)
-    messages = [SystemMessage(content=get_prompt("data_agent.system"))] + human_messages_for_llm(state)
+
+    # Inject loan_category context from the router so the LLM selects the right tool
+    loan_category = state.get("loan_category", "")
+    category_hint = ""
+    if loan_category and loan_category != "personal_loan":
+        category_hint = (
+            f"\n\nIMPORTANT: The router has already classified this as a '{loan_category}' query. "
+            f"You MUST call get_customers_for_loan with loan_category='{loan_category}'. "
+            f"Do NOT ask for clarification — execute the query now."
+        )
+
+    system_prompt = get_prompt("data_agent.system") + category_hint
+    messages = [SystemMessage(content=system_prompt)] + human_messages_for_llm(state)
 
     response = llm.invoke(messages)
 
