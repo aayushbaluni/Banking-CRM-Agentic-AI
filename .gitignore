@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.env
+app/db/crm.db
+app/ml/model.pkl
+checkpoints.db
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+brutal_test_report.json
+.cursor/
+agent-transcripts/
+app/db/crm.db-shm
+app/db/crm.db-wal
