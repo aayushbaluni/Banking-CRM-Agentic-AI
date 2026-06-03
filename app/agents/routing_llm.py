@@ -62,8 +62,18 @@ Critical:
 - "show those results again" → CONTINUE"""
 
 
-_OUTREACH_SYSTEM = """Does the RM want personalised WhatsApp/outreach messages generated
-for the customers just recommended in this same turn?
+_OUTREACH_SYSTEM = """Does the RM EXPLICITLY ask for WhatsApp messages, outreach messages,
+or message generation in their query?
+
+YES examples: "generate WhatsApp messages", "send messages", "create outreach",
+"write messages for them", "draft WhatsApp for top 5"
+
+NO examples: "find customers for personal loan", "show me car loan candidates",
+"find high-value customers likely to convert this month", "who qualifies for education loan"
+
+IMPORTANT: Phrases like "likely to convert", "this month", "high-potential" are about
+FINDING customers, NOT about generating messages. Only say YES if the RM explicitly
+mentions messages, WhatsApp, or outreach.
 
 Reply ONLY: YES or NO"""
 
