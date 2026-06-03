@@ -252,7 +252,8 @@ class TestSmartRouter:
         assert merged["final_recommendations"] == []
         assert merged["unsupported_product"] is True
         sup = supervisor_node(merged)
-        assert sup["final_response"] == ""
+        assert "isn't supported yet" in sup["final_response"]
+        assert "Personal loans" in sup["final_response"]
         assert "Rohan Mehta" not in sup["final_response"]
 
 

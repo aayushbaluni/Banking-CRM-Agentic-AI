@@ -34,7 +34,7 @@ A **production-hardened, Supervisor–Subagent multi-agent system** built with L
 
 ---
 
-## Architecture
+## Architecture Diagram
 
 ```mermaid
 flowchart TD
@@ -242,25 +242,77 @@ The supervisor (`supervisor.py`) orchestrates subagents; shared LLM clients, too
 
 ---
 
-## Tool Design
+## Tool Design and Usage
 
-| Tool | Layer | Type | What it does |
+Every tool uses LangChain's `@tool` decorator with typed parameters, descriptive docstrings (used by the LLM for tool selection), and JSON string returns. No hardcoded outputs — all tools query real databases, ML models, or LLM APIs.
+
+### Agent → Tool Mapping
+
+| Agent | Tools Used | How Selected |
+|---|---|---|
+| **Data Agent** (`data_agent.py`) | 7 CRM tools below | LLM selects via `bind_tools()` based on RM query |
+| **Scoring Agent** (`scoring_agent.py`) | `batch_score_customers` | Direct invocation (deterministic, no LLM) |
+| **Product Agent** (`product_agent.py`) | `recommend_product` | Direct invocation per scored customer |
+| **Outreach Agent** (`outreach_agent.py`) | `batch_generate_messages` | Direct invocation with guardrails |
+
+### CRM Tools (7 tools — `app/tools/crm_tools.py`)
+
+| Tool | Parameters | Returns | Used When |
 |---|---|---|---|
-| `get_high_value_customers` | CRM | SQLAlchemy | Balance ≥ threshold, sorted by balance |
-| `get_customers_without_personal_loan` | CRM | SQLAlchemy | Cross-sell pool — no existing personal loan |
-| `get_customers_for_loan` | CRM | SQLAlchemy | Category-aware cohort retrieval (7 loan types) |
-| `get_customers_by_city` | CRM | SQLAlchemy | City filter + optional salary account flag |
-| `get_salary_account_holders_without_loan` | CRM | SQLAlchemy | Pre-approved loan candidates by city |
-| `get_customer_transactions` | CRM | SQLAlchemy | 6-month transaction history for a customer |
-| `get_customer_by_id` | CRM | SQLAlchemy | Single customer profile lookup |
-| `score_loan_propensity` | ML | XGBoost | Single-customer score (0–1) + tier |
-| `batch_score_customers` | ML | XGBoost | Batch score, return top N (clamped) |
-| `recommend_product` | Rules | Deterministic | Segment → one of 13 loan variants |
-| `list_available_products` | DB | SQLAlchemy | Product catalogue lookup |
-| `generate_whatsapp_message` | LLM | GPT-4o | Single personalized message |
-| `batch_generate_messages` | LLM | GPT-4o | Bulk generation + guardrail validation |
+| `get_high_value_customers` | `min_balance=500000`, `min_income=50000`, `limit=50` | Customers sorted by balance | RM asks for "high-value", "wealthy", "premium" |
+| `get_customers_without_personal_loan` | `min_credit_score=650`, `min_income=25000`, `limit=50` | Cross-sell pool (no personal loan) | RM asks for personal loan targets |
+| `get_customers_for_loan` | `loan_category`, `min_income`, `min_credit_score`, `limit=50` | Category-filtered candidates | RM asks for home/car/business/education/gold/LAP |
+| `get_customers_by_city` | `city`, `min_balance=0`, `salary_account_only=False`, `limit=50` | City-filtered list | RM specifies a city |
+| `get_salary_account_holders_without_loan` | `city=None`, `limit=50` | Pre-approved candidates | RM mentions salary account, pre-approved |
+| `get_customer_transactions` | `customer_id`, `months=6` | 6-month transaction history | Deep-dive on specific customer |
+| `get_customer_by_id` | `customer_id` | Single customer profile | RM provides specific ID |
 
-All CRM tools use `@tool` decorators with typed inputs, descriptive docstrings for LLM tool selection, and JSON string returns.
+All CRM queries are clamped to `limit ≤ 100` via `_clamp_limit()` to prevent DoS.
+
+### Scoring Tools (2 tools — `app/tools/scoring_tools.py`)
+
+| Tool | Parameters | Returns | Backend |
+|---|---|---|---|
+| `score_loan_propensity` | `customer_json` (full profile) | `{score, tier, scoring_method, reason}` | XGBoost for personal loans; heuristic for others |
+| `batch_score_customers` | `customers_json`, `top_n=10` | Top N scored + ranked | Same dual-path, batch mode |
+
+Scoring uses `_safe_num()` / `_safe_bool()` for null-safe feature extraction. Scores are clamped to [0.0, 1.0].
+
+### Product Tools (2 tools — `app/tools/product_tools.py`)
+
+| Tool | Parameters | Returns | Backend |
+|---|---|---|---|
+| `recommend_product` | `scored_customer_json` (includes `loan_category`) | `{product, eligible, reason, offered_rate, loan_amount}` | Rule engine with 13 product matchers |
+| `list_available_products` | none | Full product catalogue | SQLAlchemy query on `Product` table |
+
+The rule engine matches top-to-bottom within each category (first match wins). Interest rates come from the `Product` database, with a credit-adjusted `offered_rate`.
+
+### Message Tools (2 tools — `app/tools/message_tools.py`)
+
+| Tool | Parameters | Returns | Backend |
+|---|---|---|---|
+| `generate_whatsapp_message` | `recommendation_json` (customer + product) | `{message, char_count, compliant, violations}` | Azure GPT-4o + guardrails |
+| `batch_generate_messages` | `recommendations_json` | Array of messages with compliance reports | Parallel async generation |
+
+Messages are generated using the `message_tools.whatsapp_generation` prompt from the centralized registry, then validated by `guardrails.py` for length (≤300 chars), CTA, opt-out, prohibited content, and first-name presence.
+
+### Example Tool Call Flow
+
+```
+RM: "Find gold loan customers with good credit"
+
+1. Router: llm_product_scope() → "gold_loan"
+2. Data Agent LLM receives: system_prompt + "IMPORTANT: loan_category='gold_loan', call get_customers_for_loan"
+3. LLM tool call: get_customers_for_loan(loan_category="gold_loan", min_credit_score=620, limit=50)
+   → SQLAlchemy: SELECT * FROM customers WHERE has_gold_loan=False AND income>=15000 AND credit>=550 LIMIT 50
+   → Returns JSON: {"count": 50, "customers": [{...}, ...]}
+4. Scoring Agent: batch_score_customers(customers_json=..., top_n=10)
+   → Heuristic scoring (gold_loan category) → top 10 ranked
+5. Product Agent: recommend_product(scored_customer_json=...) × 10
+   → Rule engine: gold_loan + income≥15k + credit≥550 → GL001 Gold Loan @ 10.5%
+6. Outreach Agent: generate_whatsapp_message(recommendation_json=...) × 10
+   → GPT-4o: personalized message → guardrails.validate() → compliant ✅
+```
 
 ---
 
@@ -341,9 +393,9 @@ Zero crashes. Zero PII leaked. Zero jailbreaks.
 **Trade-off:** Sequential latency (~5–15s for 10 customers). Outreach uses async batching where possible.
 
 ### 3. Heuristic + ML Hybrid Scoring
-**Decision:** XGBoost with SMOTE + deterministic heuristic fallback.
-**Why:** Explainability for auditors; system never fails if `model.pkl` is missing. `_safe_num` / score clamping prevent garbage-in crashes.
-**Trade-off:** Model trained on synthetic data — production needs retraining pipelines.
+**Decision:** XGBoost with SMOTE for personal loans + category-aware heuristic fallback for all 7 categories.
+**Why:** XGBoost provides high-accuracy scoring for the primary use case (personal loan conversion). Other categories use domain-expert heuristics that weight category-specific factors (e.g., business occupation for BL, age for EDL). The system never fails if `model.pkl` is missing — heuristics activate automatically. `_safe_num` / score clamping prevent garbage-in crashes.
+**Trade-off:** ML training on synthetic data limits real-world accuracy. Production would train category-specific models and add retraining pipelines. Heuristic scoring is transparent and auditable but less adaptive than ML.
 
 ### 4. AsyncSqliteSaver (vs. MemorySaver)
 **Decision:** LangGraph `AsyncSqliteSaver` keyed by `thread_id`.
@@ -367,7 +419,7 @@ Zero crashes. Zero PII leaked. Zero jailbreaks.
 
 ---
 
-## Limitations
+## Trade-offs and Limitations
 
 - **Synthetic data:** 600 Faker-generated customers; production requires PII governance and RBI/GDPR compliance.
 - **No live WhatsApp send:** Messages are generated and validated, not dispatched via Meta Business API.
@@ -388,8 +440,8 @@ Zero crashes. Zero PII leaked. Zero jailbreaks.
 ### Install
 
 ```bash
-git clone https://github.com/ayushBaluni/banking-crm-agent
-cd banking-crm-agent
+git clone https://huggingface.co/spaces/ayushBaluni/banking-crm-ai
+cd banking-crm-ai
 
 python -m venv venv
 source venv/bin/activate   # Windows: venv\Scripts\activate
@@ -595,11 +647,11 @@ banking-crm-agent/
 
 ---
 
-## New Modules (vs. PRD baseline)
+## Key Modules (beyond standard agent nodes)
 
 | Module | Responsibility | Why Added |
 |---|---|---|
-| `app/agents/routing_llm.py` | Intent, product scope, and follow-up action — all LLM classification | Replaced keyword routing with LLM-driven decisions |
+| `app/agents/routing_llm.py` | Product scope, follow-up action, outreach decision — LLM classification | Centralized routing decisions that require LLM reasoning |
 | `app/agents/base.py` | Shared LLM factory, singleton client, `@timed_node`, tool-call executor | DRY principle — eliminates repeated boilerplate |
 | `app/services/guardrails.py` | WhatsApp compliance validation before messages reach the RM | Banking regulatory requirement (TRAI, Meta Business Policy) |
 | `app/prompts/registry.py` | Centralized prompt templates — single source of truth for LLM prompts | Prevents prompt duplication and drift across agents |

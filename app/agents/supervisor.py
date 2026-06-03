@@ -171,10 +171,20 @@ def supervisor_node(state: AgentState) -> dict:
     if not recs:
         if state.get("unsupported_product"):
             return {
-                "final_response": "",
+                "final_response": (
+                    "That product category isn't supported yet. I can help with:\n"
+                    "- **Personal loans** (Standard, Pre-Approved, Premium, Flexi)\n"
+                    "- **Home loans** (Prime, Affordable)\n"
+                    "- **Car/Auto loans** (New Car, Used Car)\n"
+                    "- **Business loans** (SME, Micro)\n"
+                    "- **Education loans**\n"
+                    "- **Gold loans**\n"
+                    "- **Loan Against Property (LAP)**\n\n"
+                    "Try: *\"Find high-value customers for a personal loan\"*"
+                ),
                 "trace": [{
                     "step": "supervisor",
-                    "decision": "LLM: unsupported loan product — no customers shown",
+                    "decision": "LLM: unsupported loan product — guided to supported categories",
                     "tools_called": [],
                     "result_summary": "0 recommendations (unsupported product)",
                     "skipped": False,
