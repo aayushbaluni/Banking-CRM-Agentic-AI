@@ -440,8 +440,8 @@ Zero crashes. Zero PII leaked. Zero jailbreaks.
 ### Install
 
 ```bash
-git clone https://huggingface.co/spaces/ayushBaluni/banking-crm-ai
-cd banking-crm-ai
+git clone https://github.com/aayushbaluni/Banking-CRM-Agentic-AI.git
+cd Banking-CRM-Agentic-AI
 
 python -m venv venv
 source venv/bin/activate   # Windows: venv\Scripts\activate
