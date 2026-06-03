@@ -38,8 +38,14 @@ _INTENT_SYSTEM = """You are an intent classifier for a banking CRM AI assistant.
 
 Classify the user's message as either:
 - "crm_task"    — the user wants to find customers, score them, recommend loan products,
-                  generate outreach messages, or do any banking / CRM analysis
-- "general_chat" — greetings, thanks, help questions, or anything unrelated to CRM tasks
+                  generate outreach messages, or do any banking / CRM analysis.
+                  ANY mention of a loan type (personal, home, car, business, education,
+                  gold, LAP) is ALWAYS a crm_task, even phrased as a question like
+                  "who qualifies for X loan?" or "what about Y loan customers?"
+- "general_chat" — pure greetings, thanks, or completely unrelated to banking/loans
+
+IMPORTANT: When in doubt, classify as crm_task. Only use general_chat for messages
+that have ZERO connection to loans, customers, banking, or CRM operations.
 
 Reply with ONLY one of these two words. No explanation."""
 
