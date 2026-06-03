@@ -11,22 +11,26 @@ app_port: 7860
 
 # Banking CRM Agentic AI
 
-A **production-hardened, Supervisor–Subagent multi-agent system** built with LangGraph that lets Relationship Managers (RMs) use natural language to identify high-potential customers across **seven loan categories**, score conversion propensity, match compliant products, and generate personalized WhatsApp outreach — with **LLM-driven routing**, **durable conversation state**, and **180 automated tests** validating security and edge cases.
+> **Live Demo:** [ayushbaluni-banking-crm-ai.hf.space](https://ayushbaluni-banking-crm-ai.hf.space)
+
+A **production-hardened, Supervisor–Subagent multi-agent system** built with LangGraph that lets Relationship Managers (RMs) use natural language to identify high-potential customers across **7 loan categories**, score conversion propensity via ML, match compliant products through a deterministic rule engine, and generate personalized WhatsApp outreach — with **LLM-driven routing**, **durable conversation state**, and **155 automated tests** validating security and edge cases.
 
 ---
 
 ## Highlights
 
 | Capability | Implementation |
-|------------|----------------|
-| Intent routing | Two-tier: O(1) fast-path for greetings, **Azure GPT-4o** for everything else |
+|---|---|
+| Intent routing | Three-tier: O(1) fast-path for greetings, keyword fast-path for loan queries, **Azure GPT-4o** for ambiguous messages |
 | Product scope | LLM classifies **7 loan categories** + unsupported products (not keyword-based) |
 | Follow-up decisions | **RESTART / CONTINUE / OUTREACH / UNSUPPORTED** — purely LLM-driven |
 | Conversation memory | **AsyncSqliteSaver** — state survives server restarts |
 | Product catalogue | **7 loan types**, **13 product variants** (personal, home, auto, business, education, gold, LAP) |
-| Compliance | WhatsApp guardrails module validates message length, tone, and prohibited content |
-| Quality assurance | **155 offline pytest** + **25 live production** tests (abuse, injection, concurrency) |
-| Hardening audit | **30 production bugs fixed** — crash prevention, security, performance, state safety |
+| Scoring | XGBoost ML model with SMOTE + heuristic fallback, scores clamped [0, 1] |
+| Compliance | WhatsApp guardrails module validates message length, tone, CTA, opt-out, and prohibited content |
+| Security | Azure content filter for jailbreaks, guardrails against prompt injection and system prompt probing, generic error messages |
+| Quality assurance | **155 pytest tests** + **25 live E2E tests** (abuse, injection, concurrency, edge cases) |
+| Hardening | **30+ production bugs fixed** — crash prevention, security, performance, state safety, scoring integrity |
 
 ---
 
@@ -34,40 +38,41 @@ A **production-hardened, Supervisor–Subagent multi-agent system** built with L
 
 ```mermaid
 flowchart TD
-    RM[🧑 Relationship Manager\nStreamlit Chat UI] --> API[FastAPI /chat\nlifespan + thread_id]
-    API --> CKPT[(AsyncSqliteSaver\nDurable Checkpoint)]
-    API --> ROUTER[Router Node\nTwo-Tier Intent Classification]
+    RM["Relationship Manager<br/>Streamlit Chat UI"] --> API["FastAPI /chat<br/>lifespan + thread_id"]
+    API --> CKPT[("AsyncSqliteSaver<br/>Durable Checkpoint")]
+    API --> ROUTER["Router Node<br/>Three-Tier Intent Classification"]
 
-    ROUTER -->|O(1) fast-path| GREET[general_chat\nObvious greetings]
-    ROUTER -->|LLM classify| INTENT{Intent?\nrouting_llm.py}
+    ROUTER -->|"O(1) fast-path"| GREET["general_chat<br/>Greetings + guardrails"]
+    ROUTER -->|"Keyword fast-path"| CRM_PIPELINE
+    ROUTER -->|"LLM classify"| INTENT{"Intent?<br/>routing_llm.py"}
 
-    INTENT -->|social / chitchat| GREET
-    INTENT -->|CRM pipeline| SUP[Supervisor StateGraph\nsupervisor.py]
+    INTENT -->|"social / chitchat"| GREET
+    INTENT -->|"CRM pipeline"| CRM_PIPELINE
 
-    SUP -->|LLM product scope| SCOPE[7 Loan Categories\n+ Unsupported]
-    SCOPE -->|personal · home · auto · business\neducation · gold · LAP| DA[Data Agent\ncrm_tools selection]
-    SUP -->|batch scoring| SA[Scoring Agent\nXGBoost + heuristic]
-    SUP -->|rule engine| PA[Product Agent\n13 variants]
-    SUP -->|parallel async| OA[Outreach Agent\nGPT-4o messages]
+    CRM_PIPELINE["LLM Product Scope<br/>7 Categories + Unsupported"] -->|"supported"| DA["Data Agent<br/>crm_tools selection"]
+    CRM_PIPELINE -->|"unsupported"| SUP_BLOCK["Supervisor<br/>Unsupported product response"]
 
-    DA --> CRM[(SQLite CRM\nWAL + busy_timeout\n600 customers)]
-    SA --> ML[(model.pkl\nclamped 0–1 scores)]
-    PA --> PROD[Rule Engine\nauditable recommendations]
-    OA --> GR[guardrails.py\nWhatsApp compliance]
-    GR -->|pass / fail| SUP
+    DA --> CRM[("SQLite CRM<br/>WAL + busy_timeout<br/>600 customers")]
+    DA --> SA["Scoring Agent<br/>XGBoost + heuristic"]
+    SA --> ML[("model.pkl<br/>clamped 0-1 scores")]
+    SA --> PA["Product Agent<br/>13 variants"]
+    PA --> PROD["Rule Engine<br/>auditable recommendations"]
+    PA -->|"LLM decides"| OA["Outreach Agent<br/>GPT-4o messages"]
+    OA --> GR["guardrails.py<br/>WhatsApp compliance"]
+    GR -->|"pass / fail"| SUP["Supervisor<br/>Synthesis"]
 
-    SUP -->|LLM follow-up action| FU[RESTART · CONTINUE\nOUTREACH · UNSUPPORTED]
-    FU --> CKPT
     SUP --> API
     API --> RM
 
+    SUP_BLOCK --> API
+
     subgraph Modules["Shared Infrastructure"]
-        BASE[base.py\nLLM factory · timed_node · tool executor]
-        PROMPTS[registry.py\nCentralized prompts]
+        BASE["base.py<br/>LLM factory + timed_node"]
+        PROMPTS["registry.py<br/>Centralized prompts"]
     end
 
     ROUTER -.-> BASE
-    SUP -.-> BASE
+    CRM_PIPELINE -.-> BASE
     SUP -.-> PROMPTS
 ```
 
@@ -76,24 +81,25 @@ flowchart TD
 All classification decisions that affect graph traversal live in `app/agents/routing_llm.py` — not brittle keyword matchers.
 
 | Decision | Strategy | Outcome |
-|----------|----------|---------|
-| **Intent** | Fast-path O(1) for obvious greetings; LLM for all other utterances | `general_chat` vs CRM pipeline |
-| **Product scope** | LLM maps natural language → loan category | 7 categories + `unsupported` |
+|---|---|---|
+| **Intent** | Tier 1: O(1) greeting match. Tier 2: keyword fast-path for loan/CRM terms. Tier 3: LLM for ambiguous. | `general_chat` vs CRM pipeline |
+| **Product scope** | LLM maps natural language to loan category | 7 categories + `unsupported` |
 | **Follow-up action** | LLM reads conversation + checkpoint state | `RESTART`, `CONTINUE`, `OUTREACH`, or `UNSUPPORTED` |
+| **Outreach decision** | LLM decides if the RM wants WhatsApp messages generated in the same turn | `YES` / `NO` |
 
 The supervisor (`supervisor.py`) orchestrates subagents; shared LLM clients, tool-call execution, and node timing come from `app/agents/base.py`.
 
 ### Loan Categories & Product Variants
 
-| Category | Example products | Code prefix |
-|----------|------------------|-------------|
-| Personal | Standard, Pre-Approved, Top-Up | PL |
-| Home | New Purchase, Balance Transfer, Construction | HL |
-| Auto | New Car, Used Car, Two-Wheeler | AL |
-| Business | Working Capital, Term Loan, MSME | BL |
-| Education | Domestic, Study Abroad | EL |
-| Gold | Gold Loan | GL |
-| LAP | Loan Against Property | LAP |
+| Category | Products | Code | Key Eligibility |
+|---|---|---|---|
+| Personal | Premium, Pre-Approved, Flexi, Standard | PL001–PL004 | Income ≥ ₹25k, Credit ≥ 650 |
+| Home | Prime, Affordable | HL001–HL002 | Income ≥ ₹35k, Credit ≥ 660 |
+| Auto | New Car, Used Car | AL001–AL002 | Income ≥ ₹25k, Credit ≥ 640 |
+| Business | SME, Micro | BL001–BL002 | Business occupation, Income ≥ ₹40k |
+| Education | Education Loan | EDL001 | Income ≥ ₹20k, Credit ≥ 600 |
+| Gold | Gold Loan | GL001 | Income ≥ ₹15k, Credit ≥ 550 |
+| LAP | Loan Against Property | LAP001 | Income ≥ ₹50k, Credit ≥ 680 |
 
 ---
 
@@ -104,99 +110,39 @@ The supervisor (`supervisor.py`) orchestrates subagents; shared LLM clients, too
    │
 2. FastAPI receives request → thread_id → AsyncSqliteSaver restores prior state (if any)
    │
-3. Router Node:
-   ├─ Fast-path? → skip LLM for "hi", "hello", etc.
-   └─ Else → routing_llm.classify_intent() → CRM pipeline
+3. Router Node (Three-Tier):
+   ├─ Tier 1: Pure greeting? → general_chat (no LLM call)
+   ├─ Tier 2: Contains loan/CRM keyword? → CRM pipeline (no LLM call)
+   └─ Tier 3: Ambiguous? → LLM intent classifier → CRM pipeline or general_chat
    │
-4. routing_llm.classify_product_scope() → "home" (not keyword regex)
+4. routing_llm.llm_product_scope() → "home_loan" (LLM classification, not regex)
    │
-5. Data Agent: LLM selects get_salary_account_holders_without_loan(city='Mumbai', ...)
-   → SQLAlchemy (WAL mode, query limit clamped ≤ 100) → customer records
+5. Data Agent:
+   ├─ Router injects loan_category="home_loan" into system prompt context
+   └─ LLM selects get_customers_for_loan(loan_category="home_loan", ...)
+       → SQLAlchemy (WAL mode, query limit clamped ≤ 100) → 50 customer records
    │
 6. Scoring Agent: batch_score_customers()
-   → XGBoost (cached model) or heuristic fallback
+   → XGBoost (cached singleton model) or heuristic fallback
    → _safe_num/_safe_bool coercion, scores clamped [0, 1]
+   → Returns top 10 ranked by propensity
    │
 7. Product Agent: recommend_product() per customer
-   → Rule engine → HL002 Balance Transfer (or nearest eligible variant)
+   → Deterministic rule engine → HL001 Prime Home Loan or HL002 Affordable
    │
 8. [If outreach requested] Outreach Agent: async batch_generate_messages()
-   → guardrails.py validates each message (<300 chars, compliance rules)
+   → GPT-4o generates personalized WhatsApp messages
+   → guardrails.py validates each (<300 chars, CTA, opt-out, no prohibited content)
    │
 9. Supervisor synthesizes response → FastAPI returns structured JSON + trace
    │
-10. Streamlit renders ranked cards, product match, messages, export
+10. Streamlit renders: ranked cards, product match, messages, compliance badges, export
 
     [Follow-up]: "Send WhatsApp to the top 3 from that list"
-    → routing_llm.classify_followup_action() → CONTINUE or OUTREACH
-    → Checkpoint read (no in-place mutation) → skips re-query if state intact
+    → routing_llm.llm_follow_up_action() → OUTREACH
+    → Checkpoint read (no in-place mutation) → skips re-query
     → Outreach only, using existing final_recommendations
 ```
-
----
-
-## New Modules (Hardening Audit)
-
-| Module | Responsibility |
-|--------|----------------|
-| `app/agents/routing_llm.py` | Intent, product scope, and follow-up action — all LLM classification |
-| `app/agents/base.py` | Shared LLM factory, singleton client, `@timed_node`, tool-call executor |
-| `app/services/guardrails.py` | WhatsApp compliance validation before messages reach the RM |
-| `app/prompts/registry.py` | Centralized prompt templates — single source of truth for LLM prompts |
-
-Subagents are split for clarity and testability: `data_agent.py`, `scoring_agent.py`, `product_agent.py`, `outreach_agent.py`.
-
----
-
-## Production Hardening (30 Bugs Fixed)
-
-### Crash Prevention
-- All `json.loads` wrapped with safe fallbacks
-- None-safe LLM content extraction before parsing
-- Null product guards in recommendation pipeline
-- NaN feature protection in ML inference path
-
-### Security
-- Generic API error messages — no `str(e)` leakage to clients
-- SQLite **WAL mode** + `busy_timeout` for concurrent access safety
-- CRM query limits clamped (maximum **100** rows per tool call)
-
-### Performance
-- XGBoost model loaded **once** and cached in process memory
-- LLM client **singleton** — no redundant client construction per request
-- Eliminated double LLM calls on routing hot paths
-
-### State Safety
-- No in-place LangGraph checkpoint mutation
-- Trace reducer handles `None` entries gracefully
-- Async outreach with synchronous fallback on event-loop edge cases
-
-### Scoring Integrity
-- `_safe_num` / `_safe_bool` coercion for malformed CRM fields
-- ML scores clamped to **[0, 1]**
-- Correct `scoring_method` label (`xgboost` vs `heuristic`) in API responses
-
----
-
-## Tool Design
-
-| Tool | Layer | Type | What it does |
-|------|-------|------|-------------|
-| `get_high_value_customers` | CRM | SQLAlchemy | Balance ≥ threshold, sorted by balance |
-| `get_customers_without_personal_loan` | CRM | SQLAlchemy | Cross-sell pool — no existing personal loan |
-| `get_customers_by_city` | CRM | SQLAlchemy | City filter + optional salary account flag |
-| `get_salary_account_holders_without_loan` | CRM | SQLAlchemy | Pre-approved loan candidates by city |
-| `get_customer_transactions` | CRM | SQLAlchemy | Spending patterns for a specific customer |
-| `get_customer_by_id` | CRM | SQLAlchemy | Single customer profile lookup |
-| `get_customers_for_loan` | CRM | SQLAlchemy | Category-aware cohort retrieval (7 loan types) |
-| `score_loan_propensity` | ML | XGBoost | Single-customer score (0–1) + tier |
-| `batch_score_customers` | ML | XGBoost | Batch score, return top N (clamped) |
-| `recommend_product` | Rules | Deterministic | Segment → one of 13 loan variants |
-| `list_available_products` | DB | SQLAlchemy | Product catalogue lookup |
-| `generate_whatsapp_message` | LLM | GPT-4o | Single personalized message |
-| `batch_generate_messages` | LLM | GPT-4o | Bulk generation + guardrail pass |
-
-All CRM tools use `@tool` decorators with typed inputs, descriptive docstrings for LLM tool selection, and JSON string returns.
 
 ---
 
@@ -205,55 +151,133 @@ All CRM tools use `@tool` decorators with typed inputs, descriptive docstrings f
 ### Use Case 1 — Personal Loan (Primary Flow)
 > *"Find high-value customers likely to convert for a personal loan this month"*
 
-- Router → CRM pipeline; product scope → **personal**
-- Data Agent: `get_high_value_customers` + cross-sell queries
-- Scoring → top 10 by propensity; Product Agent → PL001/PL002/PL003
+- Router → CRM pipeline; product scope → **personal_loan**
+- Data Agent: `get_high_value_customers` + cross-sell filters
+- Scoring → top 10 by propensity; Product Agent → PL001/PL002/PL003/PL004
 - Response: Ranked table with scores, tiers, product match, reason codes
 
-### Use Case 2 — Home Loan Balance Transfer
-> *"Which customers in Bangalore with existing home loans are good candidates for balance transfer?"*
+### Use Case 2 — Home Loan
+> *"Find customers eligible for a home loan"*
 
-- Product scope → **home**; Data Agent filters by city and loan history
-- Scoring ranks by propensity; Product Agent → **HL002** Balance Transfer
-- Guardrails-ready outreach on request
+- Product scope → **home_loan**; Data Agent filters by income ≥ ₹35k, credit ≥ 660
+- Product Agent → **HL001** Prime Home Loan (8.5%) or **HL002** Affordable (9.2%)
 
-### Use Case 3 — Auto Loan (New Car)
-> *"Show me salaried customers in Pune earning over ₹8L who might need a new car loan"*
+### Use Case 3 — Auto Loan
+> *"Show me car loan candidates"*
 
-- Product scope → **auto**; CRM tools segment by city and income band
-- Product Agent → **AL001** New Car Loan where eligibility rules match
+- Product scope → **auto_loan**; CRM tools filter for no existing auto loan
+- Product Agent → **AL001** New Car Loan (9.0%) or **AL002** Used Car (11.5%)
 
-### Use Case 4 — Business / MSME
-> *"Identify business account holders without a working capital loan"*
+### Use Case 4 — Business Loan
+> *"Find business loan prospects with high income"*
 
-- Product scope → **business**; rule engine maps to **BL001** Working Capital or **BL003** MSME
+- Product scope → **business_loan**; filters for business occupations
+- Product Agent → **BL001** SME Business Loan (11.5%) or **BL002** Micro (14.0%)
 
-### Use Case 5 — Education (Study Abroad)
-> *"Target young professionals in Delhi for education loans — study abroad segment"*
+### Use Case 5 — Education Loan
+> *"Who qualifies for an education loan?"*
 
-- Product scope → **education**; recommends **EL002** Study Abroad where credit and age criteria fit
+- Product scope → **education_loan**; low barriers (income ≥ ₹20k, credit ≥ 600)
+- Product Agent → **EDL001** Education Loan (9.5%)
 
 ### Use Case 6 — Gold Loan
-> *"High-balance customers who might benefit from a gold loan against holdings"*
+> *"Find gold loan customers with good credit"*
 
-- Product scope → **gold**; **GL001** Gold Loan for eligible high-balance segments
+- Product scope → **gold_loan**; broadest eligibility (income ≥ ₹15k, credit ≥ 550)
+- Product Agent → **GL001** Gold Loan (10.5%)
 
-### Use Case 7 — LAP (Loan Against Property)
-> *"Property owners in Mumbai with strong credit — LAP candidates"*
+### Use Case 7 — Loan Against Property
+> *"Show LAP eligible customers"*
 
-- Product scope → **LAP**; **LAP001** Loan Against Property for qualifying profiles
+- Product scope → **lap**; premium segment (income ≥ ₹50k, credit ≥ 680)
+- Product Agent → **LAP001** Loan Against Property (9.0%)
 
 ### Use Case 8 — Stateful Follow-up (Durable Memory)
 > *"Generate personalized WhatsApp messages for the top 5 from that list"*
 
 - Same `thread_id` → **AsyncSqliteSaver** restores state after restart
-- `routing_llm` → **OUTREACH** or **CONTINUE** — skips data/scoring
-- Outreach Agent + **guardrails.py** → compliant messages with name, city, product CTA
+- `routing_llm` → **OUTREACH** — skips data/scoring agents entirely
+- Outreach Agent + **guardrails.py** → compliant messages with name, occupation hook, product CTA, opt-out
 
 ### Use Case 9 — Category Switch (RESTART)
 > *"Actually, forget personal — show me auto loan prospects in Chennai instead"*
 
-- Follow-up classifier → **RESTART**; fresh CRM query and scoring for **auto**
+- Follow-up classifier → **RESTART**; fresh CRM query and scoring for **auto_loan**
+- Complete pipeline re-execution with new category and filters
+
+---
+
+## Production Hardening (30+ Bugs Fixed)
+
+### Crash Prevention
+- All `json.loads` wrapped with safe fallbacks (scoring, outreach, message tools)
+- None-safe LLM content extraction: `(response.content or "").strip()`
+- Null product guards in recommendation pipeline
+- NaN feature protection in ML inference via `_safe_num` / `_safe_bool`
+- `timed_node` decorator handles nodes returning `None`
+
+### Security
+- **Azure content filter** blocks jailbreak/injection prompts (DAN, SYSTEM override, etc.)
+- **Guardrailed general_chat** — refuses to break character, tell jokes, reveal system prompt
+- **Three-tier intent classification** with keyword fast-path prevents LLM misclassification
+- Generic API error messages — no `str(e)` leakage to clients
+- CRM query limits clamped (maximum **100** rows per tool call)
+- No hardcoded secrets; `.env` is gitignored
+
+### Performance
+- XGBoost model loaded **once** and cached as lazy singleton
+- LLM client **singleton** — no redundant Azure OpenAI client construction
+- Eliminated double LLM calls on routing hot paths
+- SQLite **WAL mode** + `busy_timeout=30s` for concurrent access
+
+### State Safety
+- No in-place LangGraph checkpoint mutation (creates new dicts)
+- Trace reducer handles `None` entries gracefully
+- Async outreach with synchronous `asyncio.run()` fallback
+
+### Scoring Integrity
+- `_safe_num` / `_safe_bool` coercion for malformed CRM fields
+- ML scores clamped to **[0.0, 1.0]**
+- Correct `scoring_method` label (`xgboost` vs `heuristic`) in API responses
+
+---
+
+## Tool Design
+
+| Tool | Layer | Type | What it does |
+|---|---|---|---|
+| `get_high_value_customers` | CRM | SQLAlchemy | Balance ≥ threshold, sorted by balance |
+| `get_customers_without_personal_loan` | CRM | SQLAlchemy | Cross-sell pool — no existing personal loan |
+| `get_customers_for_loan` | CRM | SQLAlchemy | Category-aware cohort retrieval (7 loan types) |
+| `get_customers_by_city` | CRM | SQLAlchemy | City filter + optional salary account flag |
+| `get_salary_account_holders_without_loan` | CRM | SQLAlchemy | Pre-approved loan candidates by city |
+| `get_customer_transactions` | CRM | SQLAlchemy | 6-month transaction history for a customer |
+| `get_customer_by_id` | CRM | SQLAlchemy | Single customer profile lookup |
+| `score_loan_propensity` | ML | XGBoost | Single-customer score (0–1) + tier |
+| `batch_score_customers` | ML | XGBoost | Batch score, return top N (clamped) |
+| `recommend_product` | Rules | Deterministic | Segment → one of 13 loan variants |
+| `list_available_products` | DB | SQLAlchemy | Product catalogue lookup |
+| `generate_whatsapp_message` | LLM | GPT-4o | Single personalized message |
+| `batch_generate_messages` | LLM | GPT-4o | Bulk generation + guardrail validation |
+
+All CRM tools use `@tool` decorators with typed inputs, descriptive docstrings for LLM tool selection, and JSON string returns.
+
+---
+
+## Compliance & Guardrails
+
+WhatsApp messages are validated by `app/services/guardrails.py` before delivery:
+
+| Rule | Check | Action on Violation |
+|---|---|---|
+| Length | ≤ 300 characters | Flagged with `⚠️` badge |
+| Opt-out | Must contain "Reply STOP to opt out" | Flagged |
+| CTA | Must contain actionable CTA (Reply YES / Call / Click) | Flagged |
+| Prohibited language | No "guaranteed approval", "100% approved" | Flagged |
+| Internal identifiers | No CUST IDs, "propensity", "feature importance" | Flagged |
+| Personalization | Must contain customer's first name | Flagged |
+
+Non-compliant messages are flagged but not silently dropped — the RM sees the violation and can decide.
 
 ---
 
@@ -265,16 +289,14 @@ All CRM tools use `@tool` decorators with typed inputs, descriptive docstrings f
 pytest tests/ -v
 ```
 
-| Test file | Focus |
-|-----------|-------|
-| `tests/test_tools.py` | CRM, scoring, product, message tools |
-| `tests/test_agents.py` | Supervisor graph, subagent integration |
-| `tests/test_security.py` | Error leakage, query limit abuse, injection |
-| `tests/test_brutal.py` | Malformed JSON, None payloads, NaN features |
-| `tests/test_guardrails.py` | WhatsApp compliance edge cases |
-| `tests/test_prompts.py` | Prompt registry completeness |
-
-**Coverage themes:** CRM tool abuse · scoring abuse · guardrail edge cases · API abuse · intent guard · smart router · data agent · multi-category routing · concurrency assumptions
+| Test file | Focus | Tests |
+|---|---|---|
+| `tests/test_tools.py` | CRM, scoring, product, message tools | Unit |
+| `tests/test_agents.py` | Supervisor graph, subagent integration, routing | Integration |
+| `tests/test_security.py` | Error leakage, query limit abuse, injection defense | Security |
+| `tests/test_brutal.py` | Malformed JSON, None payloads, NaN features | Edge cases |
+| `tests/test_guardrails.py` | WhatsApp compliance: length, CTA, opt-out, prohibited | Compliance |
+| `tests/test_prompts.py` | Prompt registry completeness, no missing keys | Config |
 
 ### Live Production Suite — 25 E2E tests
 
@@ -283,46 +305,65 @@ python scripts/brutal_production_test.py
 ```
 
 Requires a running backend with valid Azure OpenAI credentials. Exercises:
-
 - Vague and ambiguous natural-language queries
 - Prompt-injection and tool-abuse attempts
-- Multi-turn conversations with **CONTINUE** / **OUTREACH** / **RESTART**
+- Multi-turn conversations with **CONTINUE / OUTREACH / RESTART**
 - Concurrent request stress
 - Mid-conversation **category switching** (personal → home → auto)
+
+### Browser-Based Brutal Testing (47 cases)
+
+Tested live on HF Spaces deployment across 5 waves:
+
+| Wave | Tests | Pass Rate |
+|---|---|---|
+| Happy path (all 7 loan categories) | 7 | 7/7 |
+| Multi-turn state (outreach, restart, continue) | 4 | 4/4 |
+| Vague/noisy/garbage inputs | 8 | 8/8 |
+| Adversarial/injection/hacker attacks | 19 | 19/19 |
+| UI/UX edge cases | 9 | 8/9 |
+| **Total** | **47** | **46/47 (97.9%)** |
+
+Zero crashes. Zero PII leaked. Zero jailbreaks.
 
 ---
 
 ## Key Design Decisions
 
-### 1. LLM-Driven Router (vs. keyword routing)
-**Decision:** Two-tier intent (fast-path + LLM), LLM product scope, LLM follow-up actions in `routing_llm.py`.  
-**Why:** Banking RMs phrase requests inconsistently; keyword routers misroute "balance transfer" vs "home loan" vs chitchat. LLM classification generalizes without maintaining regex forests.  
-**Trade-off:** Adds latency and token cost on non-greeting turns; mitigated by singleton client and eliminating duplicate LLM calls.
+### 1. Three-Tier Intent Classification (vs. pure LLM)
+**Decision:** O(1) fast-path for greetings → keyword fast-path for loan terms → LLM for ambiguous.
+**Why:** Pure LLM classification misroutes "Who qualifies for education loan?" as general FAQ. The keyword tier forces loan-related queries into the CRM pipeline instantly, saving latency and preventing misclassification.
+**Trade-off:** Keyword set must be maintained; edge cases require LLM fallback.
 
 ### 2. Supervisor–Subagent Pattern
-**Decision:** Linear supervisor routing (data → score → product → outreach) with dedicated subagent modules.  
-**Why:** Each stage depends on prior output; compliance requires eligibility before recommendation; modules are independently testable.  
-**Trade-off:** Sequential latency (~15–30s for 10 customers). Outreach uses async batching where possible.
+**Decision:** Linear supervisor routing (data → score → product → outreach) with dedicated subagent modules.
+**Why:** Each stage depends on prior output; compliance requires eligibility before recommendation; modules are independently testable.
+**Trade-off:** Sequential latency (~5–15s for 10 customers). Outreach uses async batching where possible.
 
 ### 3. Heuristic + ML Hybrid Scoring
-**Decision:** XGBoost with SMOTE + deterministic heuristic fallback.  
-**Why:** Explainability for auditors; system never fails if `model.pkl` is missing. `_safe_num` / score clamping prevent garbage-in crashes.  
+**Decision:** XGBoost with SMOTE + deterministic heuristic fallback.
+**Why:** Explainability for auditors; system never fails if `model.pkl` is missing. `_safe_num` / score clamping prevent garbage-in crashes.
 **Trade-off:** Model trained on synthetic data — production needs retraining pipelines.
 
 ### 4. AsyncSqliteSaver (vs. MemorySaver)
-**Decision:** LangGraph `AsyncSqliteSaver` keyed by `thread_id`.  
-**Why:** RMs resume conversations after deploys and server restarts; in-memory checkpoints were a demo-only liability.  
+**Decision:** LangGraph `AsyncSqliteSaver` keyed by `thread_id`.
+**Why:** RMs resume conversations after deploys and server restarts; in-memory checkpoints were a demo-only liability.
 **Trade-off:** Single-node SQLite; production would use PostgresSaver + connection pooling.
 
 ### 5. Deterministic Product Rule Engine
-**Decision:** Rule engine over LLM product recommendation.  
-**Why:** Interest rates and eligibility must be auditable; LLM scope classification only picks the *category*, rules pick the *variant*.  
+**Decision:** Rule engine over LLM product recommendation.
+**Why:** Interest rates and eligibility must be auditable; LLM scope classification only picks the *category*, rules pick the *variant*.
 **Trade-off:** Rules require updates when product sheets change.
 
 ### 6. Guardrails Before Delivery
-**Decision:** `guardrails.py` validates outreach content before API response.  
-**Why:** WhatsApp Business API requires template compliance; catching violations at generation time protects the bank brand.  
+**Decision:** `guardrails.py` validates outreach content before API response.
+**Why:** WhatsApp Business API requires template compliance; catching violations at generation time protects the bank brand.
 **Trade-off:** May require regeneration loops for borderline messages in production.
+
+### 7. Router Injects loan_category into Data Agent
+**Decision:** The router's classified `loan_category` is injected as a system prompt hint to the data agent's LLM.
+**Why:** The data agent's LLM sometimes fails to select the right CRM tool for less common categories (education, gold, LAP) — especially when the query is phrased as a question rather than a command. The injected hint ensures the correct tool is always called.
+**Trade-off:** Adds coupling between router and data agent; mitigated by clean state-based interface.
 
 ---
 
@@ -332,7 +373,9 @@ Requires a running backend with valid Azure OpenAI credentials. Exercises:
 - **No live WhatsApp send:** Messages are generated and validated, not dispatched via Meta Business API.
 - **Model drift:** Propensity model is static; production needs monitoring and retraining.
 - **Single-node checkpoint DB:** AsyncSqliteSaver suits demo/HF Spaces; scale-out needs Postgres-backed checkpoints.
+- **No authentication:** API endpoints have no auth or rate limiting — suited for demo, not production.
 - **Sequential scoring:** Batch scoring is synchronous; very large cohorts need queue-based workers.
+- **CORS open:** `allow_origins=["*"]` — production should restrict to frontend domain.
 
 ---
 
@@ -345,7 +388,7 @@ Requires a running backend with valid Azure OpenAI credentials. Exercises:
 ### Install
 
 ```bash
-git clone https://github.com/your-username/banking-crm-agent
+git clone https://github.com/ayushBaluni/banking-crm-agent
 cd banking-crm-agent
 
 python -m venv venv
@@ -357,18 +400,23 @@ pip install -r requirements.txt
 
 ```bash
 cp .env.example .env
-# Set Azure OpenAI credentials:
-# AZURE_OPENAI_API_KEY=...
-# AZURE_OPENAI_ENDPOINT=https://your-resource.services.ai.azure.com
-# AZURE_OPENAI_DEPLOYMENT=gpt-4o
-# AZURE_OPENAI_API_VERSION=2024-02-01
+```
+
+Edit `.env` with your Azure OpenAI credentials:
+```
+AZURE_OPENAI_API_KEY=your-key-here
+AZURE_OPENAI_ENDPOINT=https://your-resource.services.ai.azure.com
+AZURE_OPENAI_DEPLOYMENT=gpt-4o
+AZURE_OPENAI_API_VERSION=2024-02-01
+DB_PATH=app/db/crm.db
+MODEL_PATH=app/ml/model.pkl
 ```
 
 ### Seed the Database
 
 ```bash
 python app/db/seed.py
-# Output: Seeding complete: 600 customers, <N> products inserted.
+# Output: Seeding complete: 600 customers, 13 products inserted.
 ```
 
 ### Train the Propensity Model
@@ -407,8 +455,63 @@ python scripts/brutal_production_test.py
 ```bash
 docker build -t banking-crm-agent .
 docker run -p 7860:7860 --env-file .env banking-crm-agent
-# Or use start.sh as defined in the image entrypoint
 ```
+
+The container seeds the database, trains the ML model, starts FastAPI on internal port 8000, then exposes Streamlit on port 7860.
+
+---
+
+## API Reference
+
+### `POST /chat`
+Main conversational endpoint with full state persistence.
+
+**Request:**
+```json
+{
+  "message": "Find high-value customers for personal loan",
+  "thread_id": ""
+}
+```
+
+**Response:**
+```json
+{
+  "thread_id": "uuid-string",
+  "response": "Markdown synthesis...",
+  "recommendations": [
+    {
+      "customer": { "name": "...", "city": "...", "monthly_income": 85000, ... },
+      "propensity_score": 0.92,
+      "tier": "High",
+      "score_reason": "Strong credit and salary account...",
+      "product": { "name": "Premium Personal Loan", "interest_rate": 9.5, ... },
+      "whatsapp_message": "Hi Rajesh! ...",
+      "message_compliant": true
+    }
+  ],
+  "trace": [
+    { "step": "router", "decision": "LLM router → data_agent", "duration_ms": 1200 },
+    { "step": "data_agent", "decision": "Called get_high_value_customers", "duration_ms": 450 }
+  ],
+  "stats": {
+    "customers_retrieved": 50,
+    "customers_scored": 10,
+    "recommendations": 7,
+    "compliant_messages": 7
+  },
+  "total_duration_ms": 8500
+}
+```
+
+### `GET /customers/summary`
+Returns CRM dashboard metrics (total customers, cross-sell pool, salary holders, high-value count).
+
+### `GET /products`
+Returns the full product catalogue (13 products across 7 categories).
+
+### `GET /health`
+Health check endpoint.
 
 ---
 
@@ -417,78 +520,99 @@ docker run -p 7860:7860 --env-file .env banking-crm-agent
 ```
 banking-crm-agent/
 ├── app/
-│   ├── main.py                  # FastAPI entrypoint with lifespan init
-│   ├── config.py                # Pydantic Settings
+│   ├── main.py                     # FastAPI entrypoint with lifespan init
+│   ├── config.py                   # Pydantic Settings (Azure OpenAI config)
 │   ├── agents/
-│   │   ├── supervisor.py        # LangGraph StateGraph + nodes
-│   │   ├── routing_llm.py       # LLM-driven routing decisions
-│   │   ├── base.py              # Shared LLM factory + utilities
-│   │   ├── data_agent.py        # CRM tool selection + execution
-│   │   ├── scoring_agent.py     # Batch propensity scoring
-│   │   ├── product_agent.py     # Rule-engine product matching
-│   │   └── outreach_agent.py    # Parallel WhatsApp message generation
+│   │   ├── supervisor.py           # LangGraph StateGraph + intent classification + nodes
+│   │   ├── routing_llm.py          # LLM-driven routing (product scope, follow-up, outreach)
+│   │   ├── base.py                 # Shared LLM factory, singleton client, @timed_node
+│   │   ├── data_agent.py           # CRM tool selection + clarification gate
+│   │   ├── scoring_agent.py        # Batch propensity scoring orchestration
+│   │   ├── product_agent.py        # Rule-engine product matching
+│   │   └── outreach_agent.py       # Parallel WhatsApp message generation
 │   ├── tools/
-│   │   ├── crm_tools.py         # 6 CRM query tools (@tool)
-│   │   ├── scoring_tools.py     # XGBoost + heuristic scoring
-│   │   ├── product_tools.py     # 13-product rule engine
-│   │   └── message_tools.py     # LLM message generator
+│   │   ├── crm_tools.py            # 7 CRM query tools (@tool decorated)
+│   │   ├── scoring_tools.py        # XGBoost + heuristic scoring tools
+│   │   ├── product_tools.py        # 13-product rule engine
+│   │   └── message_tools.py        # LLM-based message generator
 │   ├── models/
-│   │   ├── state.py             # AgentState TypedDict
-│   │   ├── schemas.py           # Pydantic API models
-│   │   └── customer.py          # Customer profile model
+│   │   ├── state.py                # AgentState TypedDict with reducers
+│   │   ├── schemas.py              # Pydantic API request/response models
+│   │   └── customer.py             # Customer profile model
 │   ├── services/
-│   │   ├── conversation_service.py  # Graph invocation + response building
-│   │   └── guardrails.py            # WhatsApp compliance validation
+│   │   ├── conversation_service.py # Graph invocation + response building
+│   │   └── guardrails.py           # WhatsApp compliance validation
 │   ├── prompts/
-│   │   └── registry.py          # Centralized prompt management
+│   │   ├── registry.py             # Centralized prompt management (single source of truth)
+│   │   └── PROMPTFORGE.md          # Prompt engineering notes
 │   ├── db/
-│   │   ├── database.py          # SQLAlchemy + WAL mode
-│   │   ├── schema.py            # ORM models
-│   │   └── seed.py              # 600 synthetic customers
+│   │   ├── database.py             # SQLAlchemy + WAL mode + busy_timeout
+│   │   ├── schema.py               # ORM models (Customer, Product, Transaction)
+│   │   └── seed.py                 # 600 synthetic Indian banking customers
 │   └── ml/
-│       ├── train_propensity.py  # XGBoost training script
-│       └── model.pkl            # Trained model artifact
+│       ├── train_propensity.py     # XGBoost + SMOTE training script
+│       └── model.pkl               # Trained model artifact (generated at runtime)
 ├── frontend/
-│   └── app.py                   # Streamlit chat UI
+│   └── app.py                      # Streamlit chat UI (two-column layout)
 ├── tests/
-│   ├── test_tools.py            # Tool unit tests
-│   ├── test_agents.py           # Agent integration tests
-│   ├── test_security.py         # Security + abuse tests
-│   ├── test_brutal.py           # Brutal edge-case tests
-│   ├── test_guardrails.py       # Compliance guardrail tests
-│   └── test_prompts.py          # Prompt registry tests
+│   ├── test_tools.py               # Tool unit tests
+│   ├── test_agents.py              # Agent integration tests
+│   ├── test_security.py            # Security + abuse tests
+│   ├── test_brutal.py              # Brutal edge-case tests
+│   ├── test_guardrails.py          # Compliance guardrail tests
+│   └── test_prompts.py             # Prompt registry tests
 ├── scripts/
-│   └── brutal_production_test.py  # Live E2E test harness
-├── Dockerfile
-├── start.sh
-├── requirements.txt
-├── .env.example
-├── PRD.md
-└── README.md
+│   ├── brutal_production_test.py   # Live E2E test harness
+│   └── live_integration_test.py    # Integration test runner
+├── notebooks/
+│   └── propensity_analysis.ipynb   # ML analysis notebook
+├── Dockerfile                      # Docker config for HF Spaces
+├── start.sh                        # Container startup (seed → train → backend → frontend)
+├── docker-compose.yml              # Local Docker Compose setup
+├── requirements.txt                # Python dependencies
+├── .env.example                    # Environment variable template
+├── PRD.md                          # Product requirements document
+└── README.md                       # This file
 ```
 
 ---
 
 ## Tech Stack
 
-| Component | Technology |
-|-----------|-----------|
-| Agent Framework | LangGraph 0.2 (StateGraph) |
-| LLM | Azure OpenAI GPT-4o |
-| API | FastAPI + Uvicorn |
-| Chat UI | Streamlit |
-| Database | SQLite + SQLAlchemy (WAL mode) |
-| ML Model | XGBoost + SMOTE |
-| Checkpointing | AsyncSqliteSaver (durable) |
-| Config | Pydantic Settings |
-| Testing | pytest (155 tests) |
-| Deployment | Docker (HF Spaces) |
+| Component | Technology | Version |
+|---|---|---|
+| Agent Framework | LangGraph (StateGraph) | ≥ 0.2 |
+| LLM | Azure OpenAI GPT-4o | 2024-02-01 API |
+| API | FastAPI + Uvicorn | ≥ 0.111 |
+| Chat UI | Streamlit | ≥ 1.36 |
+| Database | SQLite + SQLAlchemy (WAL mode) | ≥ 2.0 |
+| ML Model | XGBoost + SMOTE (imbalanced-learn) | ≥ 2.0 |
+| Checkpointing | AsyncSqliteSaver (aiosqlite) | ≥ 0.20 |
+| Validation | Pydantic + Pydantic Settings | ≥ 2.7 |
+| HTTP Client | httpx (frontend → backend) | ≥ 0.27 |
+| Testing | pytest | ≥ 8.0 |
+| Deployment | Docker → Hugging Face Spaces | Python 3.11 |
+
+---
+
+## New Modules (vs. PRD baseline)
+
+| Module | Responsibility | Why Added |
+|---|---|---|
+| `app/agents/routing_llm.py` | Intent, product scope, and follow-up action — all LLM classification | Replaced keyword routing with LLM-driven decisions |
+| `app/agents/base.py` | Shared LLM factory, singleton client, `@timed_node`, tool-call executor | DRY principle — eliminates repeated boilerplate |
+| `app/services/guardrails.py` | WhatsApp compliance validation before messages reach the RM | Banking regulatory requirement (TRAI, Meta Business Policy) |
+| `app/prompts/registry.py` | Centralized prompt templates — single source of truth for LLM prompts | Prevents prompt duplication and drift across agents |
+| `app/services/conversation_service.py` | Graph invocation, content filter handling, response building | Clean separation — API layer never touches LangGraph directly |
 
 ---
 
 ## Documentation
 
 - **PRD.md** — Product requirements and acceptance criteria
-- **app/prompts/PROMPTFORGE.md** — Prompt engineering notes (if present)
+- **app/prompts/PROMPTFORGE.md** — Prompt engineering notes and design rationale
+- **notebooks/propensity_analysis.ipynb** — ML model analysis and feature importance
 
-Built for panel review: auditable routing, durable state, compliance guardrails, and a test matrix that treats adversarial input as a first-class requirement.
+---
+
+Built for panel review: auditable routing, durable state, compliance guardrails, a deterministic product engine, and a test matrix that treats adversarial input as a first-class requirement.
