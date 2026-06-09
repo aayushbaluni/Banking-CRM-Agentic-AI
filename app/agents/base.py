@@ -19,9 +19,11 @@ def human_messages_for_llm(state: AgentState) -> list:
 
 def get_llm(temperature: float = 0) -> ChatOpenAI:
     return ChatOpenAI(
+        base_url="https://openrouter.ai/api/v1",
         api_key=settings.openai_api_key,
         model=settings.openai_model,
         temperature=temperature,
+        max_tokens=1024,
     )
 
 
