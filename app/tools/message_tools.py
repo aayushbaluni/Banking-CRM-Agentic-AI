@@ -16,9 +16,8 @@ def _get_llm() -> ChatOpenAI:
     global _llm_instance
     if _llm_instance is None:
         _llm_instance = ChatOpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=settings.openrouter_api_key,
-            model=settings.openrouter_model,
+            api_key=settings.openai_api_key,
+            model=settings.openai_model,
             temperature=0.7,
         )
     return _llm_instance
