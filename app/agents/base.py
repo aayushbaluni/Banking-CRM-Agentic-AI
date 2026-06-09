@@ -1,7 +1,7 @@
 """Shared LLM factory, tool-call executor, and timing utilities."""
 import time
 import functools
-from langchain_openai import AzureChatOpenAI
+from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, HumanMessage
 from app.config import settings
 from app.models.state import AgentState
@@ -12,17 +12,16 @@ def human_messages_for_llm(state: AgentState) -> list:
     Return only HumanMessage turns for LLM calls.
 
     Checkpoint history may contain AIMessages with tool_calls but no ToolMessages
-    (e.g. after a partial graph run). Passing those to Azure OpenAI causes 400 errors.
+    (e.g. after a partial graph run). Passing those causes 400 errors.
     """
     return [m for m in state.get("messages", []) if isinstance(m, HumanMessage)]
 
 
-def get_llm(temperature: float = 0) -> AzureChatOpenAI:
-    return AzureChatOpenAI(
-        azure_endpoint=settings.azure_openai_endpoint,
-        azure_deployment=settings.azure_openai_deployment,
-        api_key=settings.azure_openai_api_key,
-        api_version=settings.azure_openai_api_version,
+def get_llm(temperature: float = 0) -> ChatOpenAI:
+    return ChatOpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=settings.openrouter_api_key,
+        model=settings.openrouter_model,
         temperature=temperature,
     )
 

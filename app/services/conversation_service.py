@@ -13,9 +13,9 @@ from app.models.schemas import ChatResponse, CustomerRecommendation, TraceEntry,
 
 
 def _is_content_filter_error(exc: Exception) -> bool:
-    """Azure OpenAI blocks jailbreak/injection prompts — handle gracefully."""
+    """Detect blocked/moderated prompts from the LLM provider."""
     msg = str(exc).lower()
-    return any(k in msg for k in ("content_filter", "jailbreak", "responsibleaipolicyviolation"))
+    return any(k in msg for k in ("content_filter", "jailbreak", "responsibleaipolicyviolation", "moderated", "flagged"))
 
 
 def _build_recommendation(rec: dict) -> CustomerRecommendation | None:
@@ -105,7 +105,7 @@ async def handle_chat(message: str, thread_id: str) -> ChatResponse:
                 trace=[
                     TraceEntry(
                         step="safety_filter",
-                        decision="Azure content management policy blocked the prompt (jailbreak/injection detected)",
+                        decision="Content policy blocked the prompt (jailbreak/injection detected)",
                         tools_called=[],
                         result_summary="Request blocked — no CRM data accessed",
                         skipped=True,

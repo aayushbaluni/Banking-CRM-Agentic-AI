@@ -4,7 +4,7 @@ All prompts sourced from app/prompts/registry.py.
 """
 import json
 from langchain_core.tools import tool
-from langchain_openai import AzureChatOpenAI
+from langchain_openai import ChatOpenAI
 from app.config import settings
 from app.prompts.registry import get as get_prompt
 
@@ -12,14 +12,13 @@ from app.prompts.registry import get as get_prompt
 _llm_instance = None
 
 
-def _get_llm() -> AzureChatOpenAI:
+def _get_llm() -> ChatOpenAI:
     global _llm_instance
     if _llm_instance is None:
-        _llm_instance = AzureChatOpenAI(
-            azure_endpoint=settings.azure_openai_endpoint,
-            azure_deployment=settings.azure_openai_deployment,
-            api_key=settings.azure_openai_api_key,
-            api_version=settings.azure_openai_api_version,
+        _llm_instance = ChatOpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=settings.openrouter_api_key,
+            model=settings.openrouter_model,
             temperature=0.7,
         )
     return _llm_instance

@@ -87,7 +87,7 @@ def outreach_agent_node(state: AgentState) -> dict:
         "final_recommendations": updated,
         "trace": [{
             "step": "outreach_agent",
-            "decision": f"Generated {len(recs)} messages in parallel via Azure GPT-4o, validated against compliance guardrails",
+            "decision": f"Generated {len(recs)} messages in parallel via OpenRouter, validated against compliance guardrails",
             "tools_called": ["generate_whatsapp_message (parallel)"],
             "result_summary": f"{compliant_count}/{len(recs)} compliant | avg {sum(r.get('message_char_count',0) for r in updated)//max(len(updated),1)} chars",
             "skipped": False,
